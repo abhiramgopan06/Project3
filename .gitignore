@@ -1,0 +1,16 @@
+# Python / Django
+venv/
+__pycache__/
+*.pyc
+db.sqlite3
+backend/media/
+
+# Node / React
+node_modules/
+dist/
+
+# Env files
+.env
+
+# Local Python environment folder
+env/

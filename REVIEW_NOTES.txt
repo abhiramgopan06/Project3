@@ -1,0 +1,26 @@
+APPLICATION REVIEW NOTES
+
+This review package includes the existing Event Management System source code and database.
+The Windows startup script now checks that Python and npm are available and displays clearer
+messages if a required tool is missing.
+
+Checks completed in this environment:
+- Python source files compile without syntax errors.
+- SQLite database integrity check passes.
+- ZIP archive integrity passes.
+- Existing event records and booking data were preserved.
+
+Checks not completed:
+- Django system checks and backend tests could not run because Django is not installed in this
+  environment and dependencies could not be installed here.
+- React production build could not run because frontend node_modules are not included.
+- Email delivery, Google sign-in, booking flows, and browser behavior need to be tested locally.
+
+Beginner setup:
+1. Install Python 3 and Node.js LTS (includes npm).
+2. Extract the ZIP.
+3. Double-click START_PROJECT.cmd.
+4. Keep both terminal windows open while using the app.
+5. Open http://127.0.0.1:5173/.
+
+Back up backend/db.sqlite3 before making further changes.
