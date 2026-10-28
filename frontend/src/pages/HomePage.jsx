@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import api from "../api";
 import { getErrorMessage } from "../helpers";
 import EventCard from "../components/EventCard";
+import { Link } from "react-router-dom";
 
 export default function HomePage() {
   const [events, setEvents] = useState([]);
   const [categories, setCategories] = useState([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [filters, setFilters] = useState({
     search: "",
     category: "",
@@ -17,7 +19,11 @@ export default function HomePage() {
   });
 
   async function loadData(nextFilters = filters) {
-    setLoading(true);
+    if (events.length === 0) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
     const activeFilters = {};
     for (const name in nextFilters) {
       if (nextFilters[name] !== "") {
@@ -76,6 +82,7 @@ export default function HomePage() {
       setErrorMessage(getErrorMessage(error, "Could not load events. Please try again."));
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
@@ -106,17 +113,17 @@ export default function HomePage() {
   const featuredEvents = events.slice(0, 8);
 
   return (
-    <main className="home-page">
+    <div className="home-page">
       <section className="home-hero">
         <img className="home-hero-image" src="/hero-event.jpg" alt="People enjoying a live event" />
         <div className="home-hero-shade" />
         <div className="home-hero-topline">
           <nav className="home-quick-nav" aria-label="Home page navigation">
-            <a className="is-current" href="/">Home</a>
+            <Link className="is-current" to="/">Home</Link>
             <a href="#events">Events</a>
             <a href="#categories">Categories</a>
             <a href="#discover">Discover</a>
-            <a href="/about">About us</a>
+            <Link to="/about">About us</Link>
           </nav>
         </div>
 
@@ -177,11 +184,14 @@ export default function HomePage() {
         {loading ? (
           <div className="home-loading" role="status">Finding exciting events for you…</div>
         ) : events.length > 0 ? (
+          <>
+          {refreshing && <p className="home-refreshing" role="status">Updating events…</p>}
           <div className="home-event-rail">
             {featuredEvents.map(function (event) {
               return <EventCard key={event.id} event={event} />;
             })}
           </div>
+          </>
         ) : (
           <div className="home-empty-state">
             <span>✦</span>
@@ -229,6 +239,6 @@ export default function HomePage() {
           <div className="home-discover-orb" aria-hidden="true">✦</div>
         </div>
       </section>
-    </main>
+    </div>
   );
 }

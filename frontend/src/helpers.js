@@ -12,7 +12,11 @@ export function getErrorMessage(error, fallback) {
 
   const data = error.response.data;
   if (typeof data === "string") {
-    return data;
+    const plainText = data.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    if (/<!doctype html|<html|TypeError at|Traceback/i.test(data)) {
+      return fallback || "Something went wrong while loading this page. Please try again.";
+    }
+    return plainText.slice(0, 240) || fallback || "Something went wrong. Please try again.";
   }
   if (data && data.detail) {
     return data.detail;

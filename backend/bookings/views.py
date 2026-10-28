@@ -1,6 +1,7 @@
 import uuid
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
+from datetime import timedelta
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,6 +10,38 @@ from .models import Booking, Payment, Notification, Seat
 from .serializers import BookingSerializer, NotificationSerializer
 
 from rest_framework.views import APIView
+
+
+PAYMENT_HOLD_MINUTES = 30
+
+
+def expire_unpaid_bookings(event=None):
+    cutoff = timezone.now() - timedelta(minutes=PAYMENT_HOLD_MINUTES)
+    expired = Booking.objects.select_for_update().filter(
+        status="pending",
+        booked_at__lte=cutoff,
+        payment__status="pending",
+    )
+    if event is not None:
+        expired = expired.filter(event=event)
+    expired = list(expired.select_related("event"))
+    released_by_event = {}
+    for booking in expired:
+        booking.status = "cancelled"
+        booking.save(update_fields=["status"])
+        payment = getattr(booking, "payment", None)
+        if payment and payment.status == "pending":
+            payment.status = "failed"
+            payment.save(update_fields=["status"])
+        released_by_event[booking.event_id] = released_by_event.get(booking.event_id, 0) + booking.ticket_quantity
+        Notification.objects.get_or_create(
+            user=booking.user,
+            message=f"Booking {booking.booking_id} was cancelled because payment was not completed within 30 minutes.",
+        )
+    for event_id, quantity in released_by_event.items():
+        Event.objects.filter(pk=event_id).update(
+            available_tickets=models.F("available_tickets") + quantity
+        )
 
 
 class SeatMapView(APIView):
@@ -23,6 +56,9 @@ class SeatMapView(APIView):
         if event.date < timezone.localdate() or event.status != "approved":
             if not request.user.is_authenticated or (not request.user.is_staff and event.organizer != request.user):
                 return Response({"detail": "This event is not available."}, status=404)
+
+        with transaction.atomic():
+            expire_unpaid_bookings(event)
 
         existing_seats = list(Seat.objects.filter(event=event))
         has_bookings = Booking.objects.filter(
@@ -115,8 +151,14 @@ class BookingViewSet(viewsets.ModelViewSet):
             return qs.order_by("-booked_at")
         return qs.filter(user=self.request.user).order_by("-booked_at")
 
+    def list(self, request, *args, **kwargs):
+        with transaction.atomic():
+            expire_unpaid_bookings()
+        return super().list(request, *args, **kwargs)
+
     @transaction.atomic
     def create(self, request, *args, **kwargs):
+        expire_unpaid_bookings()
         try:
             event = Event.objects.select_for_update().get(pk=request.data.get("event"))
         except Event.DoesNotExist:
@@ -192,6 +234,9 @@ class BookingViewSet(viewsets.ModelViewSet):
     @transaction.atomic
     def pay(self, request, pk=None):
         booking = self.get_object()
+        if booking.status == "pending" and booking.booked_at <= timezone.now() - timedelta(minutes=PAYMENT_HOLD_MINUTES):
+            expire_unpaid_bookings(booking.event)
+            return Response({"detail": "The 30-minute payment window has expired. The booking was cancelled and the seats are available again."}, status=400)
         if booking.status == "cancelled":
             return Response({"detail": "Cancelled booking cannot be paid."}, status=400)
         if booking.status != "pending":

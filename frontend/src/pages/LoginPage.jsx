@@ -30,7 +30,7 @@ export default function LoginPage({ setUser }) {
     } else if (data.user.role === "organizer") {
       navigate("/organizer");
     } else {
-      navigate("/dashboard");
+      navigate("/");
     }
   }
 

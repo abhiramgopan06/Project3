@@ -16,18 +16,27 @@ export default function EventDetailsPage({ user }) {
   const [seatMapError, setSeatMapError] = useState("");
   const [selectedSeats, setSelectedSeats] = useState([]);
   const [message, setMessage] = useState("");
+  const [pendingBooking, setPendingBooking] = useState(null);
+  const [clock, setClock] = useState(Date.now());
+  const [paying, setPaying] = useState(false);
 
-  async function loadEvent() {
-    setEventLoading(true);
-    setEventError("");
+  async function loadEvent(silent = false) {
+    if (!silent) {
+      setEventLoading(true);
+      setEventError("");
+    }
     try {
       const response = await api.get("/events/events/" + id + "/");
       setEvent(response.data);
     } catch (error) {
-      setEvent(null);
-      setEventError(getErrorMessage(error, "Could not load this event. Please return to the events page and try again."));
+      if (!silent) {
+        setEvent(null);
+        setEventError(getErrorMessage(error, "Could not load this event. Please return to the events page and try again."));
+      }
     } finally {
-      setEventLoading(false);
+      if (!silent) {
+        setEventLoading(false);
+      }
     }
   }
 
@@ -46,11 +55,36 @@ export default function EventDetailsPage({ user }) {
       setEvent(null);
       setSeatMap(null);
       setMessage("");
+      setPendingBooking(null);
       loadEvent();
       loadSeatMap();
     },
     [id, user]
   );
+
+  useEffect(function () {
+    const timer = window.setInterval(function () {
+      setClock(Date.now());
+    }, 1000);
+    return function () {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(function () {
+    const refreshSeats = window.setInterval(async function () {
+      try {
+        const response = await api.get("/bookings/seat-map/" + id + "/");
+        setSeatMap(response.data);
+        setSeatMapError("");
+      } catch (error) {
+        setSeatMapError("Could not refresh the seating plan. Please try again.");
+      }
+    }, 15000);
+    return function () {
+      window.clearInterval(refreshSeats);
+    };
+  }, [id]);
 
   if (eventLoading) {
     return <div className="empty" role="status">Loading event information...</div>;
@@ -102,16 +136,40 @@ export default function EventDetailsPage({ user }) {
       if (response.data.status === "confirmed") {
         setMessage("Registration confirmed!");
       } else {
-        setMessage("Booking created. Continue to payment from My Bookings.");
+        setPendingBooking(response.data);
+        setMessage("Your seats are held for 30 minutes. Complete the mock payment below to confirm your booking.");
       }
 
       setSelectedSeats([]);
-      loadEvent();
+      loadEvent(true);
       loadSeatMap();
     } catch (error) {
       loadSeatMap();
       setMessage(getErrorMessage(error, "Booking failed. Please try again."));
     }
+  }
+
+  async function handleMockPayment() {
+    if (!pendingBooking) return;
+    setPaying(true);
+    try {
+      await api.post("/bookings/bookings/" + pendingBooking.id + "/pay/");
+      setPendingBooking(null);
+      setMessage("Mock payment successful. Your booking is confirmed!");
+      await Promise.all([loadEvent(true), loadSeatMap()]);
+    } catch (error) {
+      setMessage(getErrorMessage(error, "Mock payment could not be completed. Please check your booking."));
+      await loadSeatMap();
+    } finally {
+      setPaying(false);
+    }
+  }
+
+  let paymentCountdown = "30:00";
+  if (pendingBooking && pendingBooking.booked_at) {
+    const deadline = new Date(pendingBooking.booked_at).getTime() + 30 * 60 * 1000;
+    const secondsLeft = Math.max(0, Math.floor((deadline - clock) / 1000));
+    paymentCountdown = String(Math.floor(secondsLeft / 60)).padStart(2, "0") + ":" + String(secondsLeft % 60).padStart(2, "0");
   }
 
   const isFree = Number(event.ticket_price) === 0;
@@ -177,25 +235,19 @@ export default function EventDetailsPage({ user }) {
               <small>Event organizer</small>
             </div>
           </div>
-          <Link className="organizer-profile-button" to={"/organizers/" + event.organizer}>
-            <span className="organizer-profile-icon">✦</span>
-            <span><small>DISCOVER MORE EVENTS BY</small><strong>{event.organizer_name || "Event Organizer"}</strong></span>
-            <span className="organizer-profile-arrow">→</span>
-          </Link>
-
-          <section className="event-date-section" aria-label="Event date and calendar">
+          <section className="event-date-section" aria-label="Event date and time">
             <div className="event-date-section-heading">
               <span className="eyebrow">SAVE THE DATE</span>
               <h2>Event date and time</h2>
-              <p>Check the calendar to see exactly when this event takes place.</p>
+              <p>Everything you need to know before the event.</p>
             </div>
-            <div className="event-calendar-card event-calendar-full">
+            <div className="event-date-layout">
               <div className="event-mini-calendar" aria-label={"Calendar for " + formatDate(event.date)}>
                 <div className="event-mini-calendar-heading">
                   {new Date(event.date + "T12:00:00").toLocaleDateString("en", { month: "long", year: "numeric" })}
                 </div>
                 <div className="event-mini-calendar-grid event-mini-calendar-weekdays">
-                  { ["S", "M", "T", "W", "T", "F", "S"].map(function (day, index) { return <span key={day + index}>{day}</span>; }) }
+                  {["S", "M", "T", "W", "T", "F", "S"].map(function (day, index) { return <span key={day + index}>{day}</span>; })}
                 </div>
                 <div className="event-mini-calendar-grid">
                   {Array.from({ length: new Date(new Date(event.date + "T12:00:00").getFullYear(), new Date(event.date + "T12:00:00").getMonth(), 1).getDay() }, function (_, index) { return <span className="is-blank" key={"blank-" + index} />; })}
@@ -206,14 +258,28 @@ export default function EventDetailsPage({ user }) {
                   })}
                 </div>
               </div>
-              <div className="event-calendar-content">
-                <b>Event date</b>
-                <span>{formatDate(event.date)}</span>
-                <small>{event.start_time} – {event.end_time}</small>
-                <small className="event-calendar-note">Highlighted date is your event day.</small>
+              <div className="event-date-time-cards">
+                <article className="event-date-info-card">
+                  <span className="event-info-icon" aria-hidden="true">▦</span>
+                  <small>EVENT DATE</small>
+                  <strong>{formatDate(event.date)}</strong>
+                  <p>Mark your calendar</p>
+                </article>
+                <article className="event-date-info-card">
+                  <span className="event-info-icon" aria-hidden="true">◷</span>
+                  <small>EVENT TIME</small>
+                  <strong>{event.start_time} – {event.end_time}</strong>
+                  <p>Local event time</p>
+                </article>
               </div>
             </div>
           </section>
+
+          <Link className="organizer-profile-button" to={"/organizers/" + event.organizer}>
+            <span className="organizer-profile-icon">✦</span>
+            <span><small>DISCOVER MORE EVENTS BY</small><strong>{event.organizer_name || "Event Organizer"}</strong></span>
+            <span className="organizer-profile-arrow">→</span>
+          </Link>
 
         </div>
       </div>
@@ -261,15 +327,30 @@ export default function EventDetailsPage({ user }) {
               </div>
               <button
                 className="btn primary"
-                disabled={!event.available_tickets || selectedSeats.length === 0 || !seatMap}
+                disabled={!event.available_tickets || (user && (selectedSeats.length === 0 || !seatMap))}
                 onClick={handleBooking}
               >
-                {buttonText}
+                {user ? buttonText : "Log in to book seats"}
               </button>
             </div>
+            {pendingBooking && (
+              <div className="mock-payment-panel">
+                <div className="mock-payment-copy">
+                  <span className="eyebrow">SECURE YOUR SEATS</span>
+                  <h3>Complete mock payment</h3>
+                  <p>Your selected seats are reserved for you while payment is pending. Other attendees cannot select these seats.</p>
+                  <small className={paymentCountdown === "00:00" ? "payment-timer expired" : "payment-timer"}>
+                    {paymentCountdown === "00:00" ? "Payment time expired" : "Complete payment within " + paymentCountdown}
+                  </small>
+                </div>
+                <button className="btn primary mock-pay-button" onClick={handleMockPayment} disabled={paying || paymentCountdown === "00:00"}>
+                  {paying ? "Processing mock payment..." : "Pay " + formatMoney(pendingBooking.total_amount) + " · Mock Pay"}
+                </button>
+              </div>
+            )}
           </section>
 
-      {message && <div className="notice">{message}</div>}
+      {message && <div className="notice" role="status">{message}</div>}
 
     </div>
   );

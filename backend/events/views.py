@@ -54,9 +54,11 @@ class EventViewSet(viewsets.ModelViewSet):
         params = self.request.query_params
         user = self.request.user
         if self.action == "retrieve":
-
-
-            if not (user.is_authenticated and user.is_staff):
+            if not user.is_authenticated:
+                qs = qs.filter(status="approved")
+            elif user.is_staff:
+                pass
+            else:
                 qs = qs.filter(Q(status="approved") | Q(organizer=user))
         elif user.is_authenticated and user.is_staff:
             pass
