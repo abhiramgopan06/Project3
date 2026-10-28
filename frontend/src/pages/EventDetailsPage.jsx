@@ -20,23 +20,17 @@ export default function EventDetailsPage({ user }) {
   const [clock, setClock] = useState(Date.now());
   const [paying, setPaying] = useState(false);
 
-  async function loadEvent(silent = false) {
-    if (!silent) {
-      setEventLoading(true);
-      setEventError("");
-    }
+  async function loadEvent() {
+    setEventLoading(true);
+    setEventError("");
     try {
       const response = await api.get("/events/events/" + id + "/");
       setEvent(response.data);
     } catch (error) {
-      if (!silent) {
-        setEvent(null);
-        setEventError(getErrorMessage(error, "Could not load this event. Please return to the events page and try again."));
-      }
+      setEvent(null);
+      setEventError(getErrorMessage(error, "Could not load this event. Please return to the events page and try again."));
     } finally {
-      if (!silent) {
-        setEventLoading(false);
-      }
+      setEventLoading(false);
     }
   }
 
@@ -137,11 +131,11 @@ export default function EventDetailsPage({ user }) {
         setMessage("Registration confirmed!");
       } else {
         setPendingBooking(response.data);
-        setMessage("Your seats are held for 30 minutes. Complete the mock payment below to confirm your booking.");
+        setMessage("Your seats are held for 15 minutes. Complete the mock payment below to confirm your booking.");
       }
 
       setSelectedSeats([]);
-      loadEvent(true);
+      loadEvent();
       loadSeatMap();
     } catch (error) {
       loadSeatMap();
@@ -156,7 +150,8 @@ export default function EventDetailsPage({ user }) {
       await api.post("/bookings/bookings/" + pendingBooking.id + "/pay/");
       setPendingBooking(null);
       setMessage("Mock payment successful. Your booking is confirmed!");
-      await Promise.all([loadEvent(true), loadSeatMap()]);
+      await loadEvent();
+      await loadSeatMap();
     } catch (error) {
       setMessage(getErrorMessage(error, "Mock payment could not be completed. Please check your booking."));
       await loadSeatMap();
@@ -165,9 +160,9 @@ export default function EventDetailsPage({ user }) {
     }
   }
 
-  let paymentCountdown = "30:00";
+  let paymentCountdown = "15:00";
   if (pendingBooking && pendingBooking.booked_at) {
-    const deadline = new Date(pendingBooking.booked_at).getTime() + 30 * 60 * 1000;
+    const deadline = new Date(pendingBooking.booked_at).getTime() + 15 * 60 * 1000;
     const secondsLeft = Math.max(0, Math.floor((deadline - clock) / 1000));
     paymentCountdown = String(Math.floor(secondsLeft / 60)).padStart(2, "0") + ":" + String(secondsLeft % 60).padStart(2, "0");
   }
@@ -235,19 +230,25 @@ export default function EventDetailsPage({ user }) {
               <small>Event organizer</small>
             </div>
           </div>
-          <section className="event-date-section" aria-label="Event date and time">
+          <Link className="organizer-profile-button" to={"/organizers/" + event.organizer}>
+            <span className="organizer-profile-icon">✦</span>
+            <span><small>DISCOVER MORE EVENTS BY</small><strong>{event.organizer_name || "Event Organizer"}</strong></span>
+            <span className="organizer-profile-arrow">→</span>
+          </Link>
+
+          <section className="event-date-section" aria-label="Event date and calendar">
             <div className="event-date-section-heading">
               <span className="eyebrow">SAVE THE DATE</span>
               <h2>Event date and time</h2>
-              <p>Everything you need to know before the event.</p>
+              <p>Check the calendar to see exactly when this event takes place.</p>
             </div>
-            <div className="event-date-layout">
+            <div className="event-calendar-card event-calendar-full">
               <div className="event-mini-calendar" aria-label={"Calendar for " + formatDate(event.date)}>
                 <div className="event-mini-calendar-heading">
                   {new Date(event.date + "T12:00:00").toLocaleDateString("en", { month: "long", year: "numeric" })}
                 </div>
                 <div className="event-mini-calendar-grid event-mini-calendar-weekdays">
-                  {["S", "M", "T", "W", "T", "F", "S"].map(function (day, index) { return <span key={day + index}>{day}</span>; })}
+                  { ["S", "M", "T", "W", "T", "F", "S"].map(function (day, index) { return <span key={day + index}>{day}</span>; }) }
                 </div>
                 <div className="event-mini-calendar-grid">
                   {Array.from({ length: new Date(new Date(event.date + "T12:00:00").getFullYear(), new Date(event.date + "T12:00:00").getMonth(), 1).getDay() }, function (_, index) { return <span className="is-blank" key={"blank-" + index} />; })}
@@ -258,28 +259,14 @@ export default function EventDetailsPage({ user }) {
                   })}
                 </div>
               </div>
-              <div className="event-date-time-cards">
-                <article className="event-date-info-card">
-                  <span className="event-info-icon" aria-hidden="true">▦</span>
-                  <small>EVENT DATE</small>
-                  <strong>{formatDate(event.date)}</strong>
-                  <p>Mark your calendar</p>
-                </article>
-                <article className="event-date-info-card">
-                  <span className="event-info-icon" aria-hidden="true">◷</span>
-                  <small>EVENT TIME</small>
-                  <strong>{event.start_time} – {event.end_time}</strong>
-                  <p>Local event time</p>
-                </article>
+              <div className="event-calendar-content">
+                <b>Event date</b>
+                <span>{formatDate(event.date)}</span>
+                <small>{event.start_time} – {event.end_time}</small>
+                <small className="event-calendar-note">Highlighted date is your event day.</small>
               </div>
             </div>
           </section>
-
-          <Link className="organizer-profile-button" to={"/organizers/" + event.organizer}>
-            <span className="organizer-profile-icon">✦</span>
-            <span><small>DISCOVER MORE EVENTS BY</small><strong>{event.organizer_name || "Event Organizer"}</strong></span>
-            <span className="organizer-profile-arrow">→</span>
-          </Link>
 
         </div>
       </div>
@@ -338,7 +325,7 @@ export default function EventDetailsPage({ user }) {
                 <div className="mock-payment-copy">
                   <span className="eyebrow">SECURE YOUR SEATS</span>
                   <h3>Complete mock payment</h3>
-                  <p>Your selected seats are reserved for you while payment is pending. Other attendees cannot select these seats.</p>
+                  <p>Your selected seats are held for 15 minutes while payment is pending. Other attendees cannot select these seats. Pay before the countdown ends to confirm your booking.</p>
                   <small className={paymentCountdown === "00:00" ? "payment-timer expired" : "payment-timer"}>
                     {paymentCountdown === "00:00" ? "Payment time expired" : "Complete payment within " + paymentCountdown}
                   </small>

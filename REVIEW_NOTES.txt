@@ -24,3 +24,22 @@ Beginner setup:
 5. Open http://127.0.0.1:5173/.
 
 Back up backend/db.sqlite3 before making further changes.
+
+Payment-gated QR ticket update:
+- The booking API now returns a ticket token only when the booking is confirmed/attended and its payment status is successful.
+- The attendee booking page checks both booking status and payment status before rendering the QR code or allowing ticket printing.
+- Pending, failed, expired, and cancelled bookings show a locked ticket panel instead.
+- Added a regression assertion to the QR check-in test for pending bookings and refreshed booking data after payment.
+- Free events retain their immediate confirmed registration because the backend records their zero-cost payment as successful.
+
+
+Reservation timing update (28 October 2026): unpaid reservations now have a 15-minute payment window. The backend expiry cutoff, payment endpoint, expiry notification, management-command description, event details message, and on-screen countdown use the same 15-minute duration. QR tickets remain unavailable until payment is successful.
+
+Frontend dependency fix (28 October 2026)
+- Fixed the TicketScanner build error by keeping html5-qrcode declared in frontend/package.json and removing the stale package-lock.json that did not include this dependency. The startup script runs npm install, which will now generate a consistent lockfile and install html5-qrcode.
+- If starting manually, run `npm install` inside the frontend folder before `npm run dev`.
+
+QR ticket expiry and single-use update:
+- QR tokens are returned only for successfully paid, confirmed bookings before the event end time.
+- A successful check-in marks the booking attended; the token is then withheld from attendee booking responses.
+- Repeat scans are rejected, and scans after the event end time are rejected.

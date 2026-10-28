@@ -70,7 +70,7 @@ export default function App() {
       <main>
         <Routes>
 
-          <Route path="/" element={<HomePage />} />
+          <Route path="/" element={<HomePage user={user} />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/events/:id" element={<EventDetailsPage user={user} />} />
           <Route path="/organizers/:organizerId" element={<PublicOrganizerPage />} />

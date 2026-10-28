@@ -5,11 +5,13 @@ from datetime import date, timedelta
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from PIL import Image
 from rest_framework.test import APIClient
 
 from accounts.models import Profile
 from .models import Category, Event, EventImage, Review
+from bookings.models import Booking
 
 TEMP_MEDIA = tempfile.mkdtemp()
 
@@ -287,11 +289,17 @@ class EventApiTests(TestCase):
             response = self.attendee.post("/api/bookings/bookings/", {"event": event_id, "ticket_quantity": quantity}, format="json")
             self.assertEqual(response.status_code, 400, quantity)
 
-    def test_cancelling_gives_the_tickets_back(self):
+    def test_cancellation_of_a_confirmed_booking_requires_organizer_approval(self):
         event_id = self.make_approved_event(capacity=5)
         booking = self.attendee.post("/api/bookings/bookings/", {"event": event_id, "ticket_quantity": 2}, format="json")
         self.assertEqual(Event.objects.get(pk=event_id).available_tickets, 3)
-        self.attendee.post("/api/bookings/bookings/%d/cancel/" % booking.data["id"])
+        requested = self.attendee.post("/api/bookings/bookings/%d/request-cancellation/" % booking.data["id"])
+        self.assertEqual(requested.status_code, 200)
+        self.assertTrue(requested.data["cancellation_requested"])
+        self.assertEqual(Event.objects.get(pk=event_id).available_tickets, 3)
+        approved = self.organizer.post("/api/bookings/bookings/%d/approve-cancellation/" % booking.data["id"])
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.data["status"], "cancelled")
         self.assertEqual(Event.objects.get(pk=event_id).available_tickets, 5)
 
 
@@ -305,3 +313,63 @@ class EventApiTests(TestCase):
         with self.assertNumQueries(4):
             response = self.anonymous.get("/api/events/events/")
         self.assertEqual(len(response.data), 6)
+
+
+    def test_unpaid_booking_expires_after_fifteen_minutes(self):
+        event_id = self.make_approved_event(capacity=5)
+        response = self.attendee.post(
+            "/api/bookings/bookings/",
+            {"event": event_id, "ticket_quantity": 1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        booking_id = response.data["id"]
+        Booking.objects.filter(pk=booking_id).update(
+            booked_at=timezone.now() - timedelta(minutes=16)
+        )
+
+        refreshed = self.attendee.get("/api/bookings/bookings/")
+        booking = next(item for item in refreshed.data if item["id"] == booking_id)
+        self.assertEqual(booking["status"], "cancelled")
+        self.assertEqual(booking["payment"]["status"], "failed")
+        self.assertIsNone(booking["ticket_token"])
+        self.assertEqual(Event.objects.get(pk=event_id).available_tickets, 5)
+
+    def test_ticket_qr_scan_marks_attendee_and_rejects_duplicate(self):
+        event_id = self.make_approved_event()
+        booking_response = self.attendee.post(
+            "/api/bookings/bookings/",
+            {"event": event_id, "ticket_quantity": 1},
+            format="json",
+        )
+        self.assertEqual(booking_response.status_code, 201)
+        booking = booking_response.data
+        if booking["status"] == "pending":
+            self.assertIsNone(booking["ticket_token"])
+            paid = self.attendee.post("/api/bookings/bookings/%d/pay/" % booking["id"])
+            self.assertEqual(paid.status_code, 200)
+            booking = self.attendee.get("/api/bookings/bookings/").data
+            booking = next(item for item in booking if item["id"] == booking_response.data["id"])
+        self.assertEqual(booking["payment"]["status"], "successful")
+        self.assertTrue(booking["ticket_token"])
+
+        scan_url = "/api/events/events/%d/scan-ticket/" % event_id
+        first_scan = self.organizer.post(scan_url, {"ticket_token": booking["ticket_token"]}, format="json")
+        self.assertEqual(first_scan.status_code, 200, first_scan.data)
+        self.assertEqual(first_scan.data["status"], "attended")
+        refreshed = self.attendee.get("/api/bookings/bookings/")
+        used_booking = next(item for item in refreshed.data if item["id"] == booking["id"])
+        self.assertIsNone(used_booking["ticket_token"])
+
+        duplicate_scan = self.organizer.post(scan_url, {"ticket_token": booking["ticket_token"]}, format="json")
+        self.assertEqual(duplicate_scan.status_code, 400)
+
+    def test_attendee_can_save_and_remove_favorite_event(self):
+        event_id = self.make_approved_event()
+        favorite_url = "/api/events/events/%d/favorite/" % event_id
+        self.assertEqual(self.attendee.post(favorite_url).status_code, 200)
+        favorites = self.attendee.get("/api/events/events/favorites/")
+        self.assertIn(event_id, favorites.data["event_ids"])
+        self.assertEqual(self.attendee.delete(favorite_url).status_code, 200)
+        favorites = self.attendee.get("/api/events/events/favorites/")
+        self.assertNotIn(event_id, favorites.data["event_ids"])

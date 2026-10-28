@@ -12,7 +12,7 @@ from .serializers import BookingSerializer, NotificationSerializer
 from rest_framework.views import APIView
 
 
-PAYMENT_HOLD_MINUTES = 30
+PAYMENT_HOLD_MINUTES = 15
 
 
 def expire_unpaid_bookings(event=None):
@@ -36,7 +36,7 @@ def expire_unpaid_bookings(event=None):
         released_by_event[booking.event_id] = released_by_event.get(booking.event_id, 0) + booking.ticket_quantity
         Notification.objects.get_or_create(
             user=booking.user,
-            message=f"Booking {booking.booking_id} was cancelled because payment was not completed within 30 minutes.",
+            message=f"Booking {booking.booking_id} was cancelled because payment was not completed within 15 minutes.",
         )
     for event_id, quantity in released_by_event.items():
         Event.objects.filter(pk=event_id).update(
@@ -236,7 +236,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = self.get_object()
         if booking.status == "pending" and booking.booked_at <= timezone.now() - timedelta(minutes=PAYMENT_HOLD_MINUTES):
             expire_unpaid_bookings(booking.event)
-            return Response({"detail": "The 30-minute payment window has expired. The booking was cancelled and the seats are available again."}, status=400)
+            return Response({"detail": "The 15-minute payment window has expired. The booking was cancelled and the seats are available again."}, status=400)
         if booking.status == "cancelled":
             return Response({"detail": "Cancelled booking cannot be paid."}, status=400)
         if booking.status != "pending":
@@ -257,22 +257,58 @@ class BookingViewSet(viewsets.ModelViewSet):
         )
         return Response(self.get_serializer(booking).data)
 
+    @action(detail=True, methods=["post"], url_path="request-cancellation")
+    @transaction.atomic
+    def request_cancellation(self, request, pk=None):
+        booking = self.get_object()
+        if booking.status in ["cancelled", "attended", "absent"]:
+            return Response({"detail": "This booking can no longer be cancelled."}, status=400)
+        if booking.event.date < timezone.localdate():
+            return Response({"detail": "Past event bookings cannot be cancelled."}, status=400)
+        if booking.status == "pending":
+            booking.status = "cancelled"
+            booking.save(update_fields=["status"])
+            booking.event.available_tickets += booking.ticket_quantity
+            booking.event.save(update_fields=["available_tickets"])
+            if booking.payment.status == "pending":
+                booking.payment.status = "failed"
+                booking.payment.save(update_fields=["status"])
+            Notification.objects.create(user=booking.user, message=f"Unpaid booking {booking.booking_id} was cancelled and its seats were released.")
+            return Response(self.get_serializer(booking).data)
+        if booking.cancellation_requested:
+            return Response({"detail": "A cancellation request is already waiting for the organizer."}, status=400)
+        booking.cancellation_requested = True
+        booking.save(update_fields=["cancellation_requested"])
+        Notification.objects.create(user=booking.event.organizer, message=f"Cancellation requested for booking {booking.booking_id} at {booking.event.title}.")
+        return Response(self.get_serializer(booking).data)
+
+    @action(detail=True, methods=["post"], url_path="approve-cancellation")
+    @transaction.atomic
+    def approve_cancellation(self, request, pk=None):
+        booking = Booking.objects.select_for_update().select_related("event", "user", "payment").filter(pk=pk).first()
+        if booking is None:
+            return Response({"detail": "Booking not found."}, status=404)
+        if not request.user.is_staff and booking.event.organizer_id != request.user.id:
+            return Response({"detail": "You can only approve cancellations for your own events."}, status=403)
+        if not booking.cancellation_requested or booking.status != "confirmed":
+            return Response({"detail": "This booking has no pending cancellation request."}, status=400)
+        booking.status = "cancelled"
+        booking.cancellation_requested = False
+        booking.save(update_fields=["status", "cancellation_requested"])
+        booking.event.available_tickets += booking.ticket_quantity
+        booking.event.save(update_fields=["available_tickets"])
+        if booking.payment.status == "successful":
+            booking.payment.status = "refunded"
+            booking.payment.save(update_fields=["status"])
+        Notification.objects.create(user=booking.user, message=f"Your cancellation for {booking.event.title} was approved. Any payment refund shown here is simulated in mock-payment mode.")
+        from .models import AuditLog
+        AuditLog.objects.create(actor=request.user, event=booking.event, action="cancellation_approved", details=booking.booking_id)
+        return Response(BookingSerializer(booking).data)
+
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def cancel(self, request, pk=None):
-        booking = self.get_object()
-        if booking.status == "cancelled":
-            return Response({"detail": "Booking already cancelled."}, status=400)
-        if booking.status in ["attended", "absent"]:
-            return Response({"detail": "Attendance has already been recorded, so this booking cannot be cancelled."}, status=400)
-        booking.status = "cancelled"
-        booking.save(update_fields=["status"])
-        booking.event.available_tickets += booking.ticket_quantity
-        booking.event.save(update_fields=["available_tickets"])
-        if hasattr(booking, "payment") and booking.payment.status == "successful":
-            booking.payment.status = "refunded"
-            booking.payment.save(update_fields=["status"])
-        return Response(self.get_serializer(booking).data)
+        return self.request_cancellation(request, pk)
 
 class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer

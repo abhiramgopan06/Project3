@@ -27,6 +27,9 @@ function EventCard({ event, previous, onDelete }) {
       </div>
 
       <div className="mini-event-actions organizer-event-actions">
+        <Link className="btn primary small" to={"/organizer/events/" + event.id + "/attendees?scan=1"}>
+          Scan
+        </Link>
         <Link className="btn ghost small" to={"/organizer/events/" + event.id + "/attendees"}>
           Attendees
         </Link>

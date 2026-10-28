@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../api";
 import { formatMoney, getErrorMessage } from "../helpers";
+import { QRCodeSVG } from "qrcode.react";
 
 export default function BookingsPage({ user }) {
   const [bookings, setBookings] = useState([]);
@@ -45,8 +46,9 @@ export default function BookingsPage({ user }) {
 
   async function handleCancel(bookingId) {
     try {
-      await api.post("/bookings/bookings/" + bookingId + "/cancel/");
-      setMessage("Booking cancelled.");
+      const target = bookings.find((item) => item.id === bookingId);
+      await api.post("/bookings/bookings/" + bookingId + "/request-cancellation/");
+      setMessage(target?.status === "pending" ? "Unpaid booking cancelled and seats released." : "Cancellation request sent to the organizer.");
       loadBookings();
     } catch (error) {
       setMessage(getErrorMessage(error, "Could not cancel this booking."));
@@ -99,20 +101,42 @@ export default function BookingsPage({ user }) {
         {bookings.map(function (booking) {
           const canCancel = booking.status !== "cancelled" && booking.status !== "attended" && booking.status !== "absent";
           return (
-            <div className="booking-row" key={booking.id}>
-              <div className="booking-code">{booking.booking_id}</div>
-              <div>
+            <article className="booking-ticket-card" key={booking.id}>
+              <div className="booking-ticket-info">
+                <div className="booking-code">{booking.booking_id}</div>
                 <h3>{booking.event_title}</h3>
                 <p>📅 {booking.event_date} · 📍 {booking.event_location}</p>
+                <div className="booking-ticket-meta">
+                  <span><small>Seat(s)</small><strong>{booking.seat_labels?.length ? booking.seat_labels.join(", ") : "General admission"}</strong></span>
+                  <span><small>Tickets</small><strong>{booking.ticket_quantity}</strong></span>
+                  <span><small>Total</small><strong>{formatMoney(booking.total_amount)}</strong></span>
+                  <span><small>Payment</small><strong>{booking.payment?.status || "Pending"}</strong></span>
+                </div>
+                <span className={"status " + booking.status}>{booking.status}</span>
+                {booking.checked_in_at && <p className="booking-checkin-note">✓ Checked in {new Date(booking.checked_in_at).toLocaleString()}</p>}
+                <div className="booking-ticket-actions">
+                  {booking.status === "pending" && <button className="btn primary small" onClick={() => handlePay(booking.id)}>Mock Pay</button>}
+                  {canCancel && !booking.cancellation_requested && <button className="btn ghost small" onClick={() => handleCancel(booking.id)}>{booking.status === "pending" ? "Cancel booking" : "Request cancellation"}</button>}
+              {booking.cancellation_requested && <span className="status pending">Cancellation requested</span>}
+                  {booking.status === "confirmed" && booking.payment?.status === "successful" && <button className="btn ghost small" onClick={() => window.print()}>Print ticket / receipt</button>}
+                </div>
               </div>
-              <div>
-                <b>{formatMoney(booking.total_amount)}</b>
-                <small>{booking.ticket_quantity} ticket(s)</small>
-              </div>
-              <span className={"status " + booking.status}>{booking.status}</span>
-              {booking.status === "pending" && <button className="btn primary small" onClick={() => handlePay(booking.id)}>Mock Pay</button>}
-              {canCancel && <button className="btn ghost small" onClick={() => handleCancel(booking.id)}>Cancel</button>}
-            </div>
+              <aside className="booking-qr-panel">
+                {booking.status === "attended" ? (
+                  <div className="booking-qr-pending"><span>✓</span><strong>QR ticket used</strong><small>This ticket was used for entry and can only be scanned once.</small></div>
+                ) : booking.ticket_token && booking.payment?.status === "successful" && booking.status === "confirmed" ? (
+                  <>
+                    <QRCodeSVG value={booking.ticket_token} size={156} level="H" includeMargin />
+                    <strong>Entry ticket</strong>
+                    <small>Show this QR code at the entrance.</small>
+                    <small>It expires after check-in or when the event ends.</small>
+                    <small>Keep your ticket private.</small>
+                  </>
+                ) : (
+                  <div className="booking-qr-pending"><span>▦</span><strong>Ticket QR unavailable</strong><small>Pay successfully to receive your QR ticket. Tickets expire when the event ends.</small></div>
+                )}
+              </aside>
+            </article>
           );
         })}
         {bookings.length === 0 && <div className="empty">You have no bookings yet.</div>}

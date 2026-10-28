@@ -65,3 +65,25 @@ The included database keeps the existing sample events and their booking records
 ## Email OTP and Google sign-in configuration
 
 Copy `backend/.env.example` to `backend/.env` and fill in the settings you need. Copy `frontend/.env.example` to `frontend/.env` for the Google client ID and API URL. Real email delivery requires valid SMTP credentials; without them, the development OTP is printed in the backend terminal. Never publish real passwords or secret keys.
+
+## QR tickets and organizer check-in
+
+- Confirmed bookings now include a private ticket token and a QR ticket in **My bookings**.
+- The organizer's Booking Events cards include **Scan**, **Attendees**, **Edit**, and **Delete** actions.
+- Open **Scan** to use the camera. Camera access usually requires localhost or HTTPS and browser permission. If the camera is unavailable, paste the ticket token into the manual verification field.
+- A valid, paid ticket is marked as attended by the Django API. Duplicate scans are rejected and the check-in time is saved.
+- The attendee page supports search and CSV export.
+- Attendees can save events using the heart icon on event cards; saved events appear on the home page.
+- Paid cancellation requests now require organizer approval. In this mock-payment project, the refund status is simulated and is not a real money transfer.
+
+## Process expired unpaid reservations
+
+Unpaid reservations hold seats for 15 minutes. After the window expires, the booking is cancelled, the payment is marked failed, and the seats are released. The app checks expired reservations during relevant booking requests. To also process expiries while nobody is using the site, schedule this command to run every 1–5 minutes using Windows Task Scheduler or your deployment scheduler:
+
+```text
+python manage.py expire_pending_bookings
+```
+
+Run it from the `backend` directory after installing requirements and applying migrations.
+
+See `IMPLEMENTATION_PLAN.md` for the staged plan for the remaining payment gateway, waitlist, promo-code, team-permission, test, and production-readiness work. Real payment processing requires provider credentials and server-side webhook/signature verification; the current payment button remains a demonstration.

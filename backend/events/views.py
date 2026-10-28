@@ -1,10 +1,15 @@
+from datetime import datetime
 from django.db.models import Q, Avg
+from django.db import transaction
+from django.utils.dateparse import parse_date
+from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from .models import Category, Venue, Event, EventImage, Review, EventReport
+from bookings.models import FavoriteEvent, AuditLog
 from .serializers import CategorySerializer, VenueSerializer, EventSerializer, EventImageSerializer, ReviewSerializer, EventReportSerializer
 from .permissions import IsOrganizer
 
@@ -39,7 +44,7 @@ class EventViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated(), IsOrganizer()]
         if self.action in ["approve", "reject"]:
             return [permissions.IsAdminUser()]
-        if self.action in ["update", "partial_update", "destroy", "mine", "attendees", "attendance"]:
+        if self.action in ["update", "partial_update", "destroy", "mine", "attendees", "attendance", "scan_ticket", "attendees_export", "favorites", "favorite"]:
             return [permissions.IsAuthenticated()]
         return [permissions.AllowAny()]
 
@@ -109,6 +114,23 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(qs, many=True).data)
 
     @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
+    def favorites(self, request):
+        saved = FavoriteEvent.objects.filter(user=request.user).select_related("event").order_by("-created_at")
+        return Response({
+            "event_ids": [item.event_id for item in saved],
+            "events": self.get_serializer([item.event for item in saved], many=True).data,
+        })
+
+    @action(detail=True, methods=["post", "delete"], permission_classes=[permissions.IsAuthenticated])
+    def favorite(self, request, pk=None):
+        event = self.get_object()
+        if request.method == "DELETE":
+            FavoriteEvent.objects.filter(user=request.user, event=event).delete()
+            return Response({"favorite": False})
+        FavoriteEvent.objects.get_or_create(user=request.user, event=event)
+        return Response({"favorite": True}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
     def mine(self, request):
         Event.objects.filter(
             organizer=request.user,
@@ -145,12 +167,16 @@ class EventViewSet(viewsets.ModelViewSet):
         attendee_list = []
         for booking in confirmed_bookings:
             attendee_list.append({
+                "id": booking.id,
                 "booking_id": booking.booking_id,
                 "name": booking.user.get_full_name() or booking.user.username,
                 "email": booking.user.email,
                 "ticket_quantity": booking.ticket_quantity,
                 "status": booking.status,
                 "booked_at": booking.booked_at,
+                "checked_in_at": booking.checked_in_at,
+                "cancellation_requested": booking.cancellation_requested,
+                "seat_labels": list(booking.seats.order_by("row_label", "column").values_list("label", flat=True)),
             })
 
         return Response({
@@ -184,8 +210,66 @@ class EventViewSet(viewsets.ModelViewSet):
             raise ValidationError({"booking_id": "Confirmed booking was not found for this event."})
 
         booking.status = attendance_status
-        booking.save(update_fields=["status"])
-        return Response({"booking_id": booking.booking_id, "status": booking.status})
+        update_fields = ["status"]
+        if attendance_status == "attended" and not booking.checked_in_at:
+            booking.checked_in_at = timezone.now()
+            update_fields.append("checked_in_at")
+        booking.save(update_fields=update_fields)
+        AuditLog.objects.create(actor=request.user, event=event, action="attendance_updated", details=f"{booking.booking_id}: {attendance_status}")
+        return Response({"booking_id": booking.booking_id, "status": booking.status, "checked_in_at": booking.checked_in_at})
+
+    @action(detail=True, methods=["post"], url_path="scan-ticket")
+    @transaction.atomic
+    def scan_ticket(self, request, pk=None):
+        event = self.get_object()
+        if not request.user.is_staff and event.organizer != request.user:
+            raise PermissionDenied("You can only scan tickets for your own events.")
+        token = str(request.data.get("ticket_token", "")).strip()
+        if not token:
+            raise ValidationError({"ticket_token": "Scan a valid Evently ticket QR code."})
+        from bookings.models import Booking, AuditLog
+        try:
+            booking = Booking.objects.select_for_update().select_related("user", "payment").get(
+                event=event, ticket_token=token
+            )
+        except (Booking.DoesNotExist, ValueError):
+            raise ValidationError({"ticket_token": "This ticket is not valid for this event."})
+        if booking.status == "attended":
+            raise ValidationError({"ticket_token": "This ticket has already been used and is no longer valid."})
+        event_end = timezone.make_aware(datetime.combine(event.date, event.end_time))
+        if timezone.now() >= event_end:
+            raise ValidationError({"ticket_token": "This event has ended. QR tickets can no longer be used."})
+        payment = getattr(booking, "payment", None)
+        if booking.status != "confirmed" or payment is None or payment.status != "successful":
+            raise ValidationError({"ticket_token": "Only confirmed, paid tickets can be checked in."})
+        booking.status = "attended"
+        booking.checked_in_at = timezone.now()
+        booking.save(update_fields=["status", "checked_in_at"])
+        AuditLog.objects.create(actor=request.user, event=event, action="ticket_checked_in", details=booking.booking_id)
+        return Response({
+            "detail": "Attendee checked in successfully.",
+            "booking_id": booking.booking_id,
+            "attendee": booking.user.get_full_name() or booking.user.username,
+            "status": booking.status,
+            "checked_in_at": booking.checked_in_at,
+            "seat_labels": list(booking.seats.order_by("row_label", "column").values_list("label", flat=True)),
+        })
+
+    @action(detail=True, methods=["get"], url_path="attendees-export")
+    def attendees_export(self, request, pk=None):
+        event = self.get_object()
+        if not request.user.is_staff and event.organizer != request.user:
+            raise PermissionDenied("You can only export attendees for your own events.")
+        from bookings.models import Booking
+        import csv
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="evently-attendees-{event.pk}.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Booking ID", "Name", "Email", "Seats", "Tickets", "Status", "Booked At", "Checked In At"])
+        bookings = Booking.objects.filter(event=event, status__in=["confirmed", "attended", "absent"]).select_related("user").prefetch_related("seats")
+        for booking in bookings:
+            writer.writerow([booking.booking_id, booking.user.get_full_name() or booking.user.username, booking.user.email, ", ".join(booking.seats.values_list("label", flat=True)), booking.ticket_quantity, booking.status, booking.booked_at.isoformat(), booking.checked_in_at.isoformat() if booking.checked_in_at else ""])
+        return response
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):

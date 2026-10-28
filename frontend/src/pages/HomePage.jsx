@@ -2,14 +2,15 @@ import { useEffect, useState } from "react";
 import api from "../api";
 import { getErrorMessage } from "../helpers";
 import EventCard from "../components/EventCard";
-import { Link } from "react-router-dom";
 
-export default function HomePage() {
+export default function HomePage({ user }) {
   const [events, setEvents] = useState([]);
   const [categories, setCategories] = useState([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [favoriteIds, setFavoriteIds] = useState([]);
+  const [savedEvents, setSavedEvents] = useState([]);
+  const [favoriteMessage, setFavoriteMessage] = useState("");
   const [filters, setFilters] = useState({
     search: "",
     category: "",
@@ -19,11 +20,7 @@ export default function HomePage() {
   });
 
   async function loadData(nextFilters = filters) {
-    if (events.length === 0) {
-      setLoading(true);
-    } else {
-      setRefreshing(true);
-    }
+    setLoading(true);
     const activeFilters = {};
     for (const name in nextFilters) {
       if (nextFilters[name] !== "") {
@@ -82,13 +79,26 @@ export default function HomePage() {
       setErrorMessage(getErrorMessage(error, "Could not load events. Please try again."));
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   }
 
   useEffect(function () {
     loadData();
   }, []);
+
+  useEffect(function () {
+    if (!user || user.role !== "attendee") { setFavoriteIds([]); setSavedEvents([]); return; }
+    api.get("/events/events/favorites/").then(function (response) { setFavoriteIds(response.data.event_ids || []); setSavedEvents(response.data.events || []); }).catch(function () { setFavoriteIds([]); setSavedEvents([]); });
+  }, [user]);
+
+  async function toggleFavorite(eventId) {
+    const wasFavorite = favoriteIds.includes(eventId);
+    setFavoriteMessage("");
+    try {
+      if (wasFavorite) { await api.delete("/events/events/" + eventId + "/favorite/"); setFavoriteIds(function (ids) { return ids.filter(function (id) { return id !== eventId; }); }); setSavedEvents(function (items) { return items.filter(function (item) { return item.id !== eventId; }); }); }
+      else { await api.post("/events/events/" + eventId + "/favorite/"); setFavoriteIds(function (ids) { return ids.concat(eventId); }); const event = events.find(function (item) { return item.id === eventId; }); if (event) setSavedEvents(function (items) { return [event].concat(items.filter(function (item) { return item.id !== eventId; })); }); }
+    } catch (error) { setFavoriteMessage(getErrorMessage(error, "Could not update saved events.")); }
+  }
 
   function handleFilterChange(e) {
     const name = e.target.name;
@@ -113,17 +123,17 @@ export default function HomePage() {
   const featuredEvents = events.slice(0, 8);
 
   return (
-    <div className="home-page">
+    <main className="home-page">
       <section className="home-hero">
         <img className="home-hero-image" src="/hero-event.jpg" alt="People enjoying a live event" />
         <div className="home-hero-shade" />
         <div className="home-hero-topline">
           <nav className="home-quick-nav" aria-label="Home page navigation">
-            <Link className="is-current" to="/">Home</Link>
+            <a className="is-current" href="/">Home</a>
             <a href="#events">Events</a>
             <a href="#categories">Categories</a>
             <a href="#discover">Discover</a>
-            <Link to="/about">About us</Link>
+            <a href="/about">About us</a>
           </nav>
         </div>
 
@@ -181,17 +191,15 @@ export default function HomePage() {
         </form>
 
         {errorMessage && <div className="error">{errorMessage}</div>}
+        {favoriteMessage && <div className="notice">{favoriteMessage}</div>}
         {loading ? (
           <div className="home-loading" role="status">Finding exciting events for you…</div>
         ) : events.length > 0 ? (
-          <>
-          {refreshing && <p className="home-refreshing" role="status">Updating events…</p>}
           <div className="home-event-rail">
             {featuredEvents.map(function (event) {
-              return <EventCard key={event.id} event={event} />;
+              return <EventCard key={event.id} event={event} user={user} isFavorite={favoriteIds.includes(event.id)} onToggleFavorite={toggleFavorite} />;
             })}
           </div>
-          </>
         ) : (
           <div className="home-empty-state">
             <span>✦</span>
@@ -201,6 +209,13 @@ export default function HomePage() {
           </div>
         )}
       </section>
+
+      {user && user.role === "attendee" && savedEvents.length > 0 && (
+        <section className="home-saved-section section" id="saved-events">
+          <div className="home-section-heading"><div><span className="home-section-eyebrow">YOUR SHORTLIST</span><h2>Saved <span>events</span></h2><p className="muted">Events you have bookmarked for later.</p></div></div>
+          <div className="home-event-rail">{savedEvents.map(function (event) { return <EventCard key={event.id} event={event} user={user} isFavorite={favoriteIds.includes(event.id)} onToggleFavorite={toggleFavorite} />; })}</div>
+        </section>
+      )}
 
       <section className="home-category-section" id="categories">
         <div className="section home-category-inner">
@@ -239,6 +254,6 @@ export default function HomePage() {
           <div className="home-discover-orb" aria-hidden="true">✦</div>
         </div>
       </section>
-    </div>
+    </main>
   );
 }
